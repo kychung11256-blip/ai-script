@@ -1,8 +1,9 @@
 const http = require("http");
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-
-const HTML = `<!DOCTYPE html>
+const server = http.createServer(async (req, res) => {
+  if (req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(`<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
@@ -17,10 +18,10 @@ const HTML = `<!DOCTYPE html>
   label { font-size: 13px; color: #aaa; margin-bottom: 4px; display: block; }
   input, select { width: 100%; padding: 10px 14px; background: #1e1e1e; border: 1px solid #333; border-radius: 8px; color: #fff; font-size: 14px; }
   button { padding: 14px; background: #e05a00; border: none; border-radius: 8px; color: #fff; font-size: 16px; font-weight: bold; cursor: pointer; }
-  button:hover { background: #ff6a10; }
   button:disabled { background: #555; cursor: not-allowed; }
   #result { max-width: 600px; margin: 30px auto 0; background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 24px; white-space: pre-wrap; line-height: 1.8; font-size: 14px; display: none; }
   #loading { text-align: center; color: #e05a00; margin-top: 20px; display: none; }
+  #error { text-align: center; color: #ff4444; margin-top: 20px; display: none; }
 </style>
 </head>
 <body>
@@ -55,7 +56,8 @@ const HTML = `<!DOCTYPE html>
   </div>
   <button id="btn" onclick="generate()">生成这一集脚本</button>
 </div>
-<div id="loading">正在创作中，约需30秒...</div>
+<div id="loading">正在创作中，约需30-60秒...</div>
+<div id="error"></div>
 <div id="result"></div>
 <script>
 async function generate() {
@@ -68,55 +70,79 @@ async function generate() {
   document.getElementById('btn').disabled = true;
   document.getElementById('loading').style.display = 'block';
   document.getElementById('result').style.display = 'none';
-  const res = await fetch('/generate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ genre, character, setting, conflict, style })
-  });
-  const data = await res.json();
-  document.getElementById('loading').style.display = 'none';
-  document.getElementById('btn').disabled = false;
-  document.getElementById('result').style.display = 'block';
-  document.getElementById('result').innerText = data.script;
+  document.getElementById('error').style.display = 'none';
+  try {
+    const res = await fetch('/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ genre, character, setting, conflict, style })
+    });
+    const data = await res.json();
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('btn').disabled = false;
+    if (data.error) {
+      document.getElementById('error').style.display = 'block';
+      document.getElementById('error').innerText = '错误：' + data.error;
+    } else {
+      document.getElementById('result').style.display = 'block';
+      document.getElementById('result').innerText = data.script;
+    }
+  } catch(e) {
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('btn').disabled = false;
+    document.getElementById('error').style.display = 'block';
+    document.getElementById('error').innerText = '网络错误：' + e.message;
+  }
 }
 </script>
 </body>
-</html>`;
-
-const server = http.createServer(async (req, res) => {
-  if (req.method === "GET") {
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(HTML);
+</html>`);
     return;
   }
+
   if (req.method === "POST" && req.url === "/generate") {
     let body = "";
     req.on("data", (chunk) => (body += chunk));
     req.on("end", async () => {
-      const { genre, character, setting, conflict, style } = JSON.parse(body);
-      const prompt = `你是一位专业的中国网络剧编剧。请根据以下设定，写一集完整的网络剧剧本。题材：${genre}，主角：${character}，背景：${setting}，本集核心冲突：${conflict}，风格：${style}。要求约3000字，包含完整场景描述、人物对白、内心独白，分场次，结尾留悬念。请直接开始写剧本：`;
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": ANTHROPIC_API_KEY,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 4000,
-          messages: [{ role: "user", content: prompt }],
-        }),
-      });
-      const data = await response.json();
-      const script = data.content[0].text;
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ script }));
+      try {
+        const { genre, character, setting, conflict, style } = JSON.parse(body);
+        const prompt = "你是专业编剧。写一集网络剧剧本。题材：" + genre + "，主角：" + character + "，背景：" + setting + "，冲突：" + conflict + "，风格：" + style + "。约3000字，含场景、对白、内心独白，结尾留悬念。";
+        
+        const apiRes = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": process.env.ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 4000,
+            messages: [{ role: "user", content: prompt }],
+          }),
+        });
+
+        const data = await apiRes.json();
+        
+        if (data.error) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: data.error.message }));
+          return;
+        }
+
+        const script = data.content[0].text;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ script }));
+      } catch (err) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
     });
     return;
   }
 });
 
-server.listen(process.env.PORT || 3000, "0.0.0.0", () => {
-  console.log("服务器启动成功");
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, "0.0.0.0", () => {
+  console.log("服务器启动成功，端口：" + PORT);
 });
